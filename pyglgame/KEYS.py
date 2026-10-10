@@ -1,0 +1,12 @@
+KEY_UP = "up"
+KEY_DOWN = "down"
+KEY_LEFT = "left"
+KEY_RIGHT = "right"
+
+KEY_SPACE = "space"
+KEY_SHIFT = "shift"
+KEY_CTRL="ctrl"
+KEY_ALT ="alt"
+KEY_TAB ="tab"
+KEY_ESC ="esc"
+KEY_ENTER ="enter"

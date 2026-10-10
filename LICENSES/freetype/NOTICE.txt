@@ -1,0 +1,20 @@
+FreeType —— 随 Pillow（``PIL/_imagingft.*.pyd``）静态链接的字体引擎
+================================================================================
+
+* 版本：2.13.3（见 ``LICENSES/pillow/LICENSE.txt`` 里的 ``===== freetype-2.13.3 =====`` 段）
+* 许可：上游给**两种**许可让使用者**二选一**
+
+  1. **FTL**（FreeType License）—— 类似 BSD，但带一条"广告条款"：
+     **必须在产品文档里明确致谢 FreeType Project**；
+  2. GPLv2（或更新）—— 只在你的项目本来就用 GPL 时选它。
+
+  本项目选 **FTL**（见 ``THIRD_PARTY_NOTICES.md``），因此：
+
+  - 发行物的文档 / 关于界面里要出现类似这样的一句话：
+    "Portions of this software are copyright © The FreeType Project
+     (https://www.freetype.org). All rights reserved."
+  - **不要**选 GPLv2 那一支（会给整个产品带来 GPL 义务）。
+
+* 正文：``LICENSES/pillow/LICENSE.txt``（Pillow 的许可文件里按组件分段列全了，
+  含 FTL 与 GPLv2 两段原文）。上游：https://www.freetype.org/
+* 引擎侧入口：Pillow 用它给 :class:`pyglgame.render.TextLoader` 排版（``ImageFont``）。

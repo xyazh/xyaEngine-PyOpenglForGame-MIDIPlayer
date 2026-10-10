@@ -1,0 +1,29 @@
+res/fonts/ 里的字体（**会随 res.xypack 一起发给玩家**）
+=======================================================
+
+ygblack.ttf
+-----------
+* 名称：源古黑體 / YuanGuHei（版本 3.000 —— 族名/版本读自字体自身的 ``name`` 表）
+* 版权：© 2014-2021 Adobe (http://www.adobe.com/), with Reserved Font Name 'Source'.
+* 许可：**SIL Open Font License 1.1**（字体 ``name`` 表里就写着这句，``fsType=0`` 不限制嵌入）
+* 上游：Adobe Source Han Sans（思源黑体）<https://github.com/adobe-fonts/source-han-sans>
+  —— 本目录的 ``LICENSE.txt`` 就是从那儿原样取的（逐字未改，4463 字节）
+* 正文：``LICENSES/fonts/LICENSE.txt``（= 与 ttf 同目录的 ``res/fonts/ygblack.LICENSE.txt``）
+
+OFL 1.1 的三条要点（发行时注意）
+--------------------------------
+
+1. **许可与版权声明要跟着字体走** —— 所以 ``res/fonts/ygblack.LICENSE.txt`` 与 ttf 放在
+   同一目录（并一起被 ``tools/pack_resources.py`` 打进 ``res.xypack``）；
+   ``LICENSES/fonts/LICENSE.txt`` 是给发行物根目录用的同一份。
+2. **保留字（Reserved Font Name）**：``'Source'`` 受保护。本字体已改名（YuanGuHei，不含
+   ``Source``）—— 符合 OFL 对"修改版"的要求；以后再改也**别**用 ``Source`` 起名。
+3. **字体本身不得单独出售** —— 可以随游戏/软件一起卖，不能把字体文件当商品单卖。
+
+以后加字体（约定）
+------------------
+
+* 字体文件与它的许可**放同一目录**，许可命名 ``<字体名>.LICENSE.txt``；
+* 在 ``tools/collect_licenses.py`` 的 ``COMPONENTS`` 里加一条 —— ``--verify`` 与
+  ``tests/test_notices.py`` 都会检查"每个 ttf/otf 旁边都有 .LICENSE.txt"；
+* 系统字体（例如 ``C:/Windows/Fonts/msyh.ttc`` 微软雅黑）**不能**随发行物分发。

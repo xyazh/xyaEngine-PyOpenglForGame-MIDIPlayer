@@ -1,0 +1,15 @@
+{
+  "window_width": 1920,
+  "window_height": 1080,
+  "fullscreen": false,
+  "background_mode": "dynamic",
+  "background_image": "",
+  "background_brightness": 1.0,
+  "save_video": false,
+  "save_audio": false,
+  "show_hud": true,
+  "video_fps": 60,
+  "note_speed": 16.0,
+  "note_brightness": 1.0,
+  "piano_preset": "grand"
+}

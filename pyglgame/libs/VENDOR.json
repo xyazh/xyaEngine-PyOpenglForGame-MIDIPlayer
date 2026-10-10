@@ -1,0 +1,115 @@
+{
+  "abi": ".cp310-win_amd64.pyd",
+  "already_vendored": [
+    "Box2D",
+    "pybullet.cp310-win_amd64.pyd",
+    "pybullet_utils"
+  ],
+  "generated": "2026-10-05 23:46:49",
+  "note": "运行时只在 ABI 一致时接进 sys.path（见 pyglgame/tools/vendor.py）",
+  "packages": [
+    {
+      "bytes": 43367962,
+      "dirs": [
+        "numpy",
+        "numpy.libs",
+        "numpy-2.2.6.dist-info"
+      ],
+      "distribution": "numpy",
+      "files": 1024,
+      "module": "numpy",
+      "version": "2.2.6"
+    },
+    {
+      "bytes": 8016548,
+      "dirs": [
+        "OpenGL",
+        "PyOpenGL-3.1.9.dist-info"
+      ],
+      "distribution": "PyOpenGL",
+      "files": 2895,
+      "module": "OpenGL",
+      "version": "3.1.9"
+    },
+    {
+      "bytes": 1028218,
+      "dirs": [
+        "OpenGL_accelerate",
+        "PyOpenGL_accelerate-3.1.9.dist-info"
+      ],
+      "distribution": "PyOpenGL_accelerate",
+      "files": 19,
+      "module": "OpenGL_accelerate",
+      "version": "3.1.9"
+    },
+    {
+      "bytes": 6471860,
+      "dirs": [
+        "PIL",
+        "pillow-11.2.1.dist-info"
+      ],
+      "distribution": "pillow",
+      "files": 120,
+      "module": "PIL",
+      "version": "11.2.1"
+    },
+    {
+      "bytes": 109976422,
+      "dirs": [
+        "cv2",
+        "opencv_python-4.12.0.88.dist-info"
+      ],
+      "distribution": "opencv_python",
+      "files": 88,
+      "module": "cv2",
+      "version": "4.12.0.88"
+    },
+    {
+      "bytes": 5337359,
+      "dirs": [
+        "pyglm",
+        "pyglm-2.8.2.dist-info"
+      ],
+      "distribution": "pyglm",
+      "files": 12,
+      "module": "pyglm",
+      "version": "2.8.2"
+    },
+    {
+      "bytes": 148943,
+      "dirs": [
+        "mido",
+        "mido-1.3.3.dist-info"
+      ],
+      "distribution": "mido",
+      "files": 43,
+      "module": "mido",
+      "version": "1.3.3"
+    },
+    {
+      "bytes": 2495901,
+      "dirs": [
+        "line_profiler",
+        "line_profiler-5.0.2.dist-info"
+      ],
+      "distribution": "line_profiler",
+      "files": 45,
+      "module": "line_profiler",
+      "version": "5.0.2"
+    },
+    {
+      "bytes": 206519,
+      "dirs": [
+        "keyboard",
+        "keyboard-0.13.5.dist-info"
+      ],
+      "distribution": "keyboard",
+      "files": 23,
+      "module": "keyboard",
+      "version": "0.13.5"
+    }
+  ],
+  "platform": "win32",
+  "python": "3.10.5",
+  "source": "site-packages"
+}

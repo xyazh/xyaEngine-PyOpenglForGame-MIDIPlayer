@@ -1,0 +1,201 @@
+#version 430
+
+layout (local_size_x = 16, local_size_y = 16) in;
+
+layout (binding = 0, rgba16f) readonly uniform image2D inputImage;
+layout (binding = 1, rgba16f) uniform image2D pingpongImage1;
+layout (binding = 2, rgba16f) uniform image2D pingpongImage2;
+layout (binding = 3, rgba16f) uniform image2D downImage1;
+layout (binding = 4, rgba16f) uniform image2D downImage2;
+layout (binding = 5, rgba16f) uniform image2D outImage;
+layout (binding = 6, rgba16f) uniform image2D ldrImage;
+
+uniform int mode;
+uniform ivec2 p2Size;
+
+const int RADIUS1 = 5;
+const float weights1[6] = float[6](
+0.16397, 0.15136, 0.11906, 0.07981, 0.04559, 0.02219
+);
+
+const int RADIUS2 = 10;
+const float weights2[11] = float[11](
+0.08272, 0.08108, 0.07636, 0.06909, 0.06007, 0.05017, 0.04026, 0.03105, 0.02300, 0.01637, 0.01119
+);
+
+vec4 getHdr(vec4 color) {
+    float m = max(color.r, max(color.g, color.b));
+    if (m <= 1.0) {
+        return vec4(0);
+    }
+    return color;
+}
+
+vec4 getLdr(vec4 color) {
+    float m = max(color.r, max(color.g, color.b));
+    if (m <= 1.0) {
+        return color;
+    }
+    float alpha = color.a;
+    vec3 rgb = color.rgb;
+    rgb /= m;
+    return vec4(rgb, 1.0);
+}
+
+// 派发线程数按 ceil(size/16) 计算，可能超出纹理尺寸，写越界是未定义行为
+bool inBounds(ivec2 gid, ivec2 size) {
+    return gid.x < size.x && gid.y < size.y;
+}
+
+void main() {
+    ivec2 gid = ivec2(gl_GlobalInvocationID.xy);
+    ivec2 inSize = imageSize(inputImage);
+    ivec2 p1Size = imageSize(pingpongImage1);
+    ivec2 p2Size = imageSize(pingpongImage2);
+    ivec2 downSize1 = imageSize(downImage1);
+    ivec2 downSize2 = imageSize(downImage2);
+    ivec2 o = imageSize(outImage);
+    if (mode == 0) {
+        if (!inBounds(gid, downSize1)) return;
+        // 转化为百分比位置
+        vec2 uv = vec2(gid) / vec2(downSize1);
+        // 还原为原图像素位置
+        ivec2 inPos = ivec2(uv * vec2(inSize));
+        // 取样点偏移（中心 + 四角）
+        int range = 1;
+        ivec2 offsets[5] = ivec2[5](
+            ivec2(0, 0),
+            ivec2(-range, -range),
+            ivec2(+range, +range),
+            ivec2(-range, +range),
+            ivec2(+range, -range)
+        );
+        vec4 sum = vec4(0.0);
+        int count = 0;
+        for (int i = 0; i < 5; i++) {
+            ivec2 pos = clamp(inPos + offsets[i], ivec2(0), inSize - ivec2(1));
+            sum += getHdr(imageLoad(inputImage, pos));
+            count++;
+        }
+        imageStore(downImage1, gid, sum / float(count));
+    }
+    else if (mode == 1) {
+        // gid 当前线程在 pingpongImage1 中的位置
+        if (gid.x >= p1Size.x || gid.y >= p1Size.y) return;
+        // 计算在 downImage1 的浮点坐标
+        vec2 uv = vec2(gid) / vec2(p1Size);          // [0,1] 范围
+        vec2 downCoord = uv * vec2(downSize1) - 0.5; // 下采样像素坐标，-0.5 对齐中心
+        ivec2 i0 = ivec2(floor(downCoord));
+        ivec2 i1 = i0 + ivec2(1, 0);
+        ivec2 i2 = i0 + ivec2(0, 1);
+        ivec2 i3 = i0 + ivec2(1, 1);
+        // clamp 防止越界
+        i0 = clamp(i0, ivec2(0), downSize1 - 1);
+        i1 = clamp(i1, ivec2(0), downSize1 - 1);
+        i2 = clamp(i2, ivec2(0), downSize1 - 1);
+        i3 = clamp(i3, ivec2(0), downSize1 - 1);
+        vec2 f = fract(downCoord); // 小数部分，用于插值
+        // 双线性插值
+        vec4 c00 = imageLoad(downImage1, i0);
+        vec4 c10 = imageLoad(downImage1, i1);
+        vec4 c01 = imageLoad(downImage1, i2);
+        vec4 c11 = imageLoad(downImage1, i3);
+        vec4 c0 = mix(c00, c10, f.x);
+        vec4 c1 = mix(c01, c11, f.x);
+        vec4 c = mix(c0, c1, f.y);
+        imageStore(pingpongImage1, gid, c);
+    }
+    else if (mode == 2) {
+        if (!inBounds(gid, p2Size)) return;
+        vec4 blurColor = vec4(0.0);
+        float totalWeight = 0.0;
+        for (int i = -RADIUS1; i <= RADIUS1; i++){
+            ivec2 offset = gid + ivec2(i, 0);
+            if (offset.x >= p1Size.x || offset.x < 0){
+                continue;
+            }
+            float w = weights1[abs(i)];
+            totalWeight += w;
+            blurColor += imageLoad(pingpongImage1, offset) * w;
+        }
+        blurColor /= max(totalWeight, 1e-6);
+        imageStore(pingpongImage2, gid, blurColor);
+    }else if (mode == 3) {
+        if (!inBounds(gid, p1Size)) return;
+        vec4 blurColor = vec4(0.0);
+        float totalWeight = 0.0;
+        for (int i = -RADIUS1; i <= RADIUS1; i++){
+            ivec2 offset = gid + ivec2(0, i);
+            if (offset.y >= p2Size.y || offset.y < 0){
+                continue;
+            }
+            float w = weights1[abs(i)];
+            totalWeight += w;
+            blurColor += imageLoad(pingpongImage2, offset) * w;
+        }
+        blurColor /= max(totalWeight, 1e-6);
+        imageStore(pingpongImage1, gid, blurColor);
+    }else if (mode == 4) {
+        if (!inBounds(gid, downSize2)) return;
+        vec4 blurColor = vec4(0.0);
+        float totalWeight = 0.0;
+        for (int i = -RADIUS2; i <= RADIUS2; i++){
+            ivec2 offset = gid + ivec2(i, 0);
+            if (offset.x >= downSize1.x || offset.x < 0){
+                continue;
+            }
+            float w = weights2[abs(i)];
+            totalWeight += w;
+            blurColor += imageLoad(downImage1, offset) * w;
+        }
+        blurColor /= max(totalWeight, 1e-6);
+        imageStore(downImage2, gid, blurColor);
+    }else if (mode == 5) {
+        if (!inBounds(gid, downSize1)) return;
+        vec4 blurColor = vec4(0.0);
+        float totalWeight = 0.0;
+        for (int i = -RADIUS2; i <= RADIUS2; i++){
+            ivec2 offset = gid + ivec2(0, i);
+            if (offset.y >= downSize2.y || offset.y < 0){
+                continue;
+            }
+            float w = weights2[abs(i)];
+            totalWeight += w;
+            blurColor += imageLoad(downImage2, offset) * w;
+        }
+        blurColor /= max(totalWeight, 1e-6);
+        imageStore(downImage1, gid, blurColor);
+    }else if (mode == 6){
+        ivec2 outSize = imageSize(outImage);
+        ivec2 ldrSize = imageSize(ldrImage);
+        if (!inBounds(gid, outSize) || !inBounds(gid, ldrSize)) return;
+        // 计算在 pingpongImage1 中的浮点坐标
+        vec2 uv = vec2(gid) / vec2(outSize);          // [0,1] 范围
+        vec2 pingCoord = uv * vec2(p1Size) - vec2(0.5); // 像素中心对齐
+        ivec2 i0 = ivec2(floor(pingCoord));
+        ivec2 i1 = i0 + ivec2(1, 0);
+        ivec2 i2 = i0 + ivec2(0, 1);
+        ivec2 i3 = i0 + ivec2(1, 1);
+        // clamp 防止越界
+        i0 = clamp(i0, ivec2(0), p1Size - 1);
+        i1 = clamp(i1, ivec2(0), p1Size - 1);
+        i2 = clamp(i2, ivec2(0), p1Size - 1);
+        i3 = clamp(i3, ivec2(0), p1Size - 1);
+        vec2 f = fract(pingCoord);
+        // 双线性插值
+        vec4 c00 = imageLoad(pingpongImage1, i0);
+        vec4 c10 = imageLoad(pingpongImage1, i1);
+        vec4 c01 = imageLoad(pingpongImage1, i2);
+        vec4 c11 = imageLoad(pingpongImage1, i3);
+        vec4 pingColor = mix(mix(c00, c10, f.x), mix(c01, c11, f.x), f.y);
+        vec4 inputColor = imageLoad(ldrImage, gid);
+        // 合并方式示例：简单相加
+        vec3 outColor = pingColor.rgb + inputColor.rgb;
+        float dither = (fract(sin(dot(gl_GlobalInvocationID.xy ,vec2(12.9898,78.233))) * 43758.5453) - 0.5)/255.0;
+        outColor = outColor + dither;
+        imageStore(outImage, gid, vec4(outColor,1.0));
+    }else if (mode == 7) {
+        if (!inBounds(gid, imageSize(ldrImage))) return;
+        imageStore(ldrImage, gid, getLdr(imageLoad(inputImage, gid)));
+    }
+}

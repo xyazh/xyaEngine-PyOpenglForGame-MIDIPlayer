@@ -1,0 +1,102 @@
+#version 430
+
+// 3D 体积噪声贴图（一次生成、长期复用），供体积雾（volumetric.frag）滚动采样。
+//
+// 为什么是"生成一次"而不是每帧重算：
+//   - 噪声是静态的，流动靠**采样坐标平移**（两层不同风速错动）就能做出来，
+//     比每帧重算一张 64³ 贴图便宜两个数量级；
+//   - 生成时必须可平铺（GL_REPEAT），否则每跨一个整数边界就有一道硬接缝。
+//
+// 四个通道各放一层不同尺度/种类的噪声（Python 侧 u_kindR/G/B/A 指定）：
+//   R = 主结构（低频大团块 / 云顶起伏）
+//   G = 中频翻涌（干冰的卷边）
+//   B = 细颗粒（Worley 气泡感）
+//   A = 高频细节（侵蚀/抖动）
+//
+// 通道之间用 u_channelGain 拉开频率（建议整数，例如 2.0 → f, 2f, 4f）。
+// 噪声本体在 noise.glsl 里，与 2D 贴图共用一份实现。
+//
+// **倍频由贴图分辨率兜底**（nzOctaveBudget）：纹理只有 size³ 个纹素，倍频层数
+// 让「最高一层每格 < 2 个纹素」就等于把噪声塞进混叠区 —— 采样出来是随机糙点，
+// 雾面上表现为「一层明显的粗颗粒」。所以每通道的层数取 min(u_octaves, 预算)。
+
+layout (local_size_x = 4, local_size_y = 4, local_size_z = 4) in;
+
+layout (binding = 7, rgba32f) uniform image3D outputImage;
+
+uniform float u_frequency;    // 每轴向的基础格点数（取整才能无缝）
+uniform int   u_kindR;        // R 通道种类（NOISE_*）
+uniform int   u_kindG;        // G 通道种类
+uniform int   u_kindB;        // B 通道种类
+uniform int   u_kindA;        // A 通道种类
+uniform int   u_octaves;      // 倍频层数 1..8
+uniform float u_lacunarity;   // 每层频率倍率（可平铺建议 2.0）
+uniform float u_gain;         // 每层振幅倍率
+uniform float u_channelGain;  // 通道之间的频率倍率（建议整数）
+uniform float u_jitter;       // Worley 特征点抖动 [0,1]
+uniform float u_warp;         // 域扭曲强度
+uniform float u_threshold;    // 阈值
+uniform float u_softness;     // 阈值过渡宽度（0 = 恒等映射）
+uniform float u_contrast;     // 对比度（幂）
+uniform float u_amplitude;    // 最终振幅
+uniform float u_value;        // 最终偏置
+uniform int   u_invert;       // 反相
+
+#include "noise.glsl"
+
+// 一层通道：坐标预乘了 scale，所以周期也要跟着乘（否则高倍频处露接缝）
+float nzChannel(vec3 coord, int kind, float scale, int octaves)
+{
+    vec3 period = vec3(u_frequency) * scale;
+    float n = nzFbm(coord, kind, octaves, u_lacunarity, u_gain,
+                    period, u_jitter, u_warp);
+    return nzShape(n, u_threshold, u_softness, u_contrast, u_invert);
+}
+
+// 这个通道"能"用几层倍频：最高一层的格点数不能超过纹理分辨率的一半
+// （即每格至少 2 个纹素 = 奈奎斯特下限）。超了的那一层实际是**随机纹素值**，
+// 采样出来就是一层固定的糙点 —— 雾面上的"粗颗粒"主要来自这里，而不是
+// 体积雾的采样步数（步数加到 256 也不会变）。返回 min(预算, u_octaves)。
+int nzOctaveBudget(float scale)
+{
+    float size = float(imageSize(outputImage).x);
+    float cells = u_frequency * scale;   // 该通道基础层的格点数（每轴）
+    float frequency = 1.0;
+    int octaves = 0;
+    for (int i = 0; i < NZ_MAX_OCTAVES; ++i) {
+        if (cells * frequency >= size * 0.5) {
+            break;                        // 这一层已经进混叠区，砍掉
+        }
+        octaves += 1;
+        frequency *= u_lacunarity;
+    }
+    return min(max(octaves, 1), max(u_octaves, 1));
+}
+
+void main()
+{
+    ivec3 gid = ivec3(gl_GlobalInvocationID.xyz);
+    ivec3 size = imageSize(outputImage);
+    vec3 uv = (vec3(gid) + 0.5) / vec3(size);   // 纹素中心
+    vec3 base = uv * u_frequency;
+
+    float gain = max(u_channelGain, 1.0);
+    // 每通道的层数由奈奎斯特预算定：64³ + frequency 2 + channel_gain 2 时
+    // R/G/B 分别拿到 4/3/2 层（G、B 原来的 4/3 层是超过奈奎斯特的）
+    int octavesR = nzOctaveBudget(1.0);
+    int octavesG = nzOctaveBudget(gain);
+    int octavesB = nzOctaveBudget(gain * gain);
+
+    // R：主结构（低频）→ 干冰雾的大团块与云顶起伏
+    float r = nzChannel(base, u_kindR, 1.0, octavesR);
+    // G：中频翻涌 → 卷边/丝状
+    float g = nzChannel(base * gain, u_kindG, gain, octavesG);
+    // B：细颗粒 → 气泡/颗粒感（层数最少，避免超过纹理奈奎斯特频率）
+    float b = nzChannel(base * gain * gain, u_kindB, gain * gain, octavesB);
+    // A：高频细节 → 侵蚀/抖动（只 1 层，本来就远离混叠区）
+    float a = nzChannel(base * gain * gain, u_kindA, gain * gain, 1);
+
+    // 注意：变量名不能叫 packed —— 它是 GLSL 的保留字（uniform block 的布局限定符）
+    vec4 voxel = vec4(r, g, b, a) * u_amplitude + u_value;
+    imageStore(outputImage, gid, clamp(voxel, 0.0, 1.0));
+}

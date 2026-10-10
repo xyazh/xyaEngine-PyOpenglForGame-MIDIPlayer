@@ -1,0 +1,284 @@
+#version 430
+
+/* FFT / 逆 FFT 的蝶形计算（radix-2，DIT：输入按位反转序，输出自然序）。
+ *
+ * 图像缓冲（都是 RGBA32F，Python 侧由 FFTFilter 分配）：
+ *   image unit 1/2/3 = workR/workG/workB：三个颜色通道各自的复数，.r = 实部、.g = 虚部
+ *   image unit 4     = outputImage     ："给人看"的结果（频谱图 / 逆变换后的图像）
+ *   image unit 5     = spectrumReal    ：.rgb = R/G/B 通道的**实部**（快照）
+ *   image unit 6     = spectrumImag    ：.rgb = R/G/B 通道的**虚部**（快照）
+ *
+ * 为什么是**原地**蝶形 + 单独的"快照"缓冲（对比旧版）：
+ *   蝶形一趟里每个线程只处理一对 (a, b)，各线程写的像素互不重叠 → 原地安全；
+ *   旧版按 fftStep 的奇偶在 src/dst 之间切缓冲区，但读写用的是同一张，
+ *   于是第二阶段读到的还是没被更新的数据（等于每趟都在重新算第一步）。
+ *   旧版也没有 memoryBarrier（同一张缓冲读后写）与越界保护 —— 派发线程数按
+ *   ceil(size/16) 算，很容易越界写（未定义行为）。
+ *   逆变换要从频谱初始化自己的 work 缓冲：若把 work 本身当读取源就是
+ *   "同一张纹理一边读一边写"，所以对外暴露的复频谱是**快照**（mode 7）。
+ *
+ * mode：
+ *   0 = 从空间域图像初始化（inputImage）
+ *   1 = 横向蝶形（一行内做一趟）    2 = 纵向蝶形（一列内做一趟）
+ *   3 = 输出**频谱图**（fftshift + log 幅度）
+ *   4 = 从复频谱快照初始化（spectrumReal / spectrumImag）
+ *   5 = 输出**逆变换后的图像**（实部 / (w*h)）
+ *   6 = 从单张实值频谱初始化（inputImage.rgb 当实部，虚部 0）
+ *   7 = 把蝶形结果导出成复频谱快照（work* → spectrumReal / spectrumImag）
+ *
+ * fftStep   ：蝶形阶段（span = 1 << (fftStep + 1)）；横向、纵向各自从 0 数起 ——
+ *             位反转是"每个维度各自做"的，所以两个方向的阶段计数互不影响。
+ * inverseFFT：0 = 正变换（旋转因子 e^{-iθ}），1 = 逆变换（e^{+iθ}）；
+ *             逆变换的 1/(w*h) 归一化在 mode 5 里做。
+ *
+ * 尺寸必须是 2 的幂（Python 侧校验）：位反转要求长度是 2 的幂。
+ */
+
+layout(local_size_x = 16, local_size_y = 16) in;
+
+layout(binding = 1, rgba32f) uniform image2D workR;
+layout(binding = 2, rgba32f) uniform image2D workG;
+layout(binding = 3, rgba32f) uniform image2D workB;
+layout(binding = 4, rgba32f) uniform image2D outputImage;
+layout(binding = 5, rgba32f) uniform image2D spectrumReal;
+layout(binding = 6, rgba32f) uniform image2D spectrumImag;
+
+uniform sampler2D inputImage;    // mode 0 / 6
+// 采样器名带 Tex 后缀：不能和上面的 spectrumReal/spectrumImag **图像**同名
+// （GLSL 里重名是编译错误 C1038，第一次跑验证就撞上了）
+uniform sampler2D spectrumRealTex;  // 采样器：mode 4 用的复频谱实部
+uniform sampler2D spectrumImagTex;  // 采样器：mode 4 用的复频谱虚部
+
+uniform ivec2 imageSize;
+uniform int mode;
+uniform int fftStep;
+uniform int inverseFFT;
+uniform float spectrumGain;      // 频谱图的幅度增益（<=0 时按 1 处理）
+uniform float spectrumLogBase;   // 频谱图的 log 归一化基数（<=0 时自动用 log2(w*h)）
+
+const float PI = 3.1415926535897932384626433832795;
+const vec3 LUMA709 = vec3(0.2126, 0.7152, 0.0722);
+
+vec2 cMul(vec2 a, vec2 b)
+{
+    return vec2(a.x * b.x - a.y * b.y, a.x * b.y + a.y * b.x);
+}
+
+vec2 twiddle(float k, float n)
+{
+    float sign = inverseFFT == 0 ? -1.0 : 1.0;
+    float angle = sign * 2.0 * PI * k / n;
+    return vec2(cos(angle), sin(angle));
+}
+
+uint reverseBits(uint value, uint bits)
+{
+    uint result = 0u;
+    for (uint i = 0u; i < bits; i++) {
+        result <<= 1u;
+        result |= (value & 1u);
+        value >>= 1u;
+    }
+    return result;
+}
+
+// 位反转需要的位数 = log2(长度)。尺寸是 2 的幂，round 是精确的
+// （旧版写死 10，只能跑 1024²）
+uint reversedIndex(uint value, int length)
+{
+    return reverseBits(value, uint(round(log2(float(length)))));
+}
+
+ivec2 reversedPosition(ivec2 pos)
+{
+    return ivec2(int(reversedIndex(uint(pos.x), imageSize.x)),
+                 int(reversedIndex(uint(pos.y), imageSize.y)));
+}
+
+vec2 texelUV(ivec2 pos)
+{
+    return (vec2(pos) + 0.5) / vec2(imageSize);
+}
+
+bool outOfBounds(ivec2 pos)
+{
+    return any(greaterThanEqual(pos, imageSize));
+}
+
+// === mode 0：空间域图像 → work 缓冲（位反转序）===
+void initFromImage()
+{
+    ivec2 pos = ivec2(gl_GlobalInvocationID.xy);
+    if (outOfBounds(pos)) return;
+    ivec2 target = reversedPosition(pos);
+    vec3 color = texture(inputImage, texelUV(pos)).rgb;
+    imageStore(workR, target, vec4(color.r, 0.0, 0.0, 1.0));
+    imageStore(workG, target, vec4(color.g, 0.0, 0.0, 1.0));
+    imageStore(workB, target, vec4(color.b, 0.0, 0.0, 1.0));
+}
+
+// === mode 4：复频谱快照 → work 缓冲（位反转序）===
+void initFromSpectrum()
+{
+    ivec2 pos = ivec2(gl_GlobalInvocationID.xy);
+    if (outOfBounds(pos)) return;
+    ivec2 target = reversedPosition(pos);
+    vec3 real = texture(spectrumRealTex, texelUV(pos)).rgb;
+    vec3 imag = texture(spectrumImagTex, texelUV(pos)).rgb;
+    imageStore(workR, target, vec4(real.r, imag.r, 0.0, 1.0));
+    imageStore(workG, target, vec4(real.g, imag.g, 0.0, 1.0));
+    imageStore(workB, target, vec4(real.b, imag.b, 0.0, 1.0));
+}
+
+// === mode 6：单张实值频谱 → work 缓冲（位反转序，虚部 0）===
+void initFromRealSpectrum()
+{
+    ivec2 pos = ivec2(gl_GlobalInvocationID.xy);
+    if (outOfBounds(pos)) return;
+    ivec2 target = reversedPosition(pos);
+    vec3 real = texture(inputImage, texelUV(pos)).rgb;
+    imageStore(workR, target, vec4(real.r, 0.0, 0.0, 1.0));
+    imageStore(workG, target, vec4(real.g, 0.0, 0.0, 1.0));
+    imageStore(workB, target, vec4(real.b, 0.0, 0.0, 1.0));
+}
+
+// === mode 1 / 2：一趟蝶形（读、写同一张 work 缓冲，线程间像素不重叠）===
+void fftPass(bool vertical)
+{
+    ivec2 gid = ivec2(gl_GlobalInvocationID.xy);
+    int span = 1 << (fftStep + 1);
+    // 注意别用 "half" 当变量名：它是 GLSL 的保留关键字（C0502 语法错误）
+    int halfSpan = span >> 1;
+    int line = vertical ? gid.x : gid.y;          // 在"第几行/列"上做
+    int butterfly = vertical ? gid.y : gid.x;     // 这一趟里的第几对
+    int total = vertical ? imageSize.y : imageSize.x;
+    int lines = vertical ? imageSize.x : imageSize.y;
+    // 派发的线程数按 ceil(行数/16) 算，行号可能越界；越界读写是未定义行为
+    if (line >= lines || butterfly >= total / 2) return;
+
+    int group = butterfly / halfSpan;
+    int offset = butterfly % halfSpan;
+    int a = group * span + offset;
+    int b = a + halfSpan;
+    ivec2 pa = vertical ? ivec2(line, a) : ivec2(a, line);
+    ivec2 pb = vertical ? ivec2(line, b) : ivec2(b, line);
+
+    vec2 ra = imageLoad(workR, pa).rg;
+    vec2 rb = imageLoad(workR, pb).rg;
+    vec2 ga = imageLoad(workG, pa).rg;
+    vec2 gb = imageLoad(workG, pb).rg;
+    vec2 ba = imageLoad(workB, pa).rg;
+    vec2 bb = imageLoad(workB, pb).rg;
+
+    vec2 w = twiddle(float(offset), float(span));
+    vec2 rt = cMul(rb, w);
+    vec2 gt = cMul(gb, w);
+    vec2 bt = cMul(bb, w);
+
+    imageStore(workR, pa, vec4(ra + rt, 0.0, 1.0));
+    imageStore(workR, pb, vec4(ra - rt, 0.0, 1.0));
+    imageStore(workG, pa, vec4(ga + gt, 0.0, 1.0));
+    imageStore(workG, pb, vec4(ga - gt, 0.0, 1.0));
+    imageStore(workB, pa, vec4(ba + bt, 0.0, 1.0));
+    imageStore(workB, pb, vec4(ba - bt, 0.0, 1.0));
+}
+
+// === mode 7：work 缓冲（每通道 .rg）→ 快照（.rgb = 三个通道的实部/虚部）===
+void storeSpectrum()
+{
+    ivec2 pos = ivec2(gl_GlobalInvocationID.xy);
+    if (outOfBounds(pos)) return;
+    vec2 r = imageLoad(workR, pos).rg;
+    vec2 g = imageLoad(workG, pos).rg;
+    vec2 b = imageLoad(workB, pos).rg;
+    imageStore(spectrumReal, pos, vec4(r.x, g.x, b.x, 1.0));
+    imageStore(spectrumImag, pos, vec4(r.y, g.y, b.y, 1.0));
+}
+
+// === mode 3：频谱图（fftshift：零频搬到画面中心 —— 只改"读"的位置，不动数据）===
+void outputSpectrum()
+{
+    ivec2 pos = ivec2(gl_GlobalInvocationID.xy);
+    if (outOfBounds(pos)) return;
+    ivec2 source = (pos + imageSize / 2) % imageSize;
+    float gain = spectrumGain > 0.0 ? spectrumGain : 1.0;
+    float logBase = spectrumLogBase > 0.0
+        ? spectrumLogBase : log2(float(imageSize.x * imageSize.y));
+    vec3 magnitude = vec3(length(imageLoad(workR, source).rg),
+                          length(imageLoad(workG, source).rg),
+                          length(imageLoad(workB, source).rg));
+    vec3 color = log(1.0 + magnitude * gain) / max(logBase, 1e-6);
+    imageStore(outputImage, pos, vec4(clamp(color, 0.0, 1.0), 1.0));
+}
+
+// === mode 5：逆变换结果（实部 / (w*h)）===
+void outputInverse()
+{
+    ivec2 pos = ivec2(gl_GlobalInvocationID.xy);
+    if (outOfBounds(pos)) return;
+    float scale = 1.0 / float(imageSize.x * imageSize.y);
+    vec3 color = vec3(imageLoad(workR, pos).r,
+                      imageLoad(workG, pos).r,
+                      imageLoad(workB, pos).r) * scale;
+    imageStore(outputImage, pos, vec4(color, 1.0));
+}
+
+// === mode 8：复频谱图（R = 实部 / G = 虚部，归一化 + fftshift 居中）===
+// "把频谱当图片改"用的表示：R/G 就是实部/虚部，改完交给 mode 9 就能还原。
+// 两个约定：
+//   1. 除以 W·H 归一化 —— 1024² 的直流项能到 5×10⁵，超过 RGBA16F 的 65504；
+//      归一化之后值在 [-1,1] 量级，16F/32F 都能存；
+//   2. 取**亮度通道**（三通道复数的加权和 —— 复数是线性运算，等价于先取亮度再变换），
+//      这样一张 RGBA 纹理就够放；彩色精确往返请用 Spectrum2D（实部/虚部各一张）。
+void outputComplexSpectrum()
+{
+    ivec2 pos = ivec2(gl_GlobalInvocationID.xy);
+    if (outOfBounds(pos)) return;
+    ivec2 source = (pos + imageSize / 2) % imageSize;
+    vec2 r = imageLoad(workR, source).rg;
+    vec2 g = imageLoad(workG, source).rg;
+    vec2 b = imageLoad(workB, source).rg;
+    vec2 luma = r * LUMA709.r + g * LUMA709.g + b * LUMA709.b;
+    float scale = 1.0 / float(imageSize.x * imageSize.y);
+    imageStore(outputImage, pos, vec4(luma * scale, 0.0, 1.0));
+}
+
+// === mode 9：从复频谱图初始化（R = 实部 / G = 虚部，fftshift 居中，单通道）===
+// 与 mode 8 严格互逆（含归一化），所以"改完的频谱图"能还原成灰度图。
+void initFromComplexImage()
+{
+    ivec2 pos = ivec2(gl_GlobalInvocationID.xy);
+    if (outOfBounds(pos)) return;
+    ivec2 shifted = (pos + imageSize / 2) % imageSize;
+    vec2 spectrum = texture(inputImage, texelUV(shifted)).rg
+                    * float(imageSize.x * imageSize.y);
+    ivec2 target = reversedPosition(pos);
+    imageStore(workR, target, vec4(spectrum, 0.0, 1.0));
+    imageStore(workG, target, vec4(spectrum, 0.0, 1.0));
+    imageStore(workB, target, vec4(spectrum, 0.0, 1.0));
+}
+
+void main()
+{
+    if (mode == 0) {
+        initFromImage();
+    } else if (mode == 1) {
+        fftPass(false);
+    } else if (mode == 2) {
+        fftPass(true);
+    } else if (mode == 3) {
+        outputSpectrum();
+    } else if (mode == 4) {
+        initFromSpectrum();
+    } else if (mode == 5) {
+        outputInverse();
+    } else if (mode == 6) {
+        initFromRealSpectrum();
+    } else if (mode == 7) {
+        storeSpectrum();
+    } else if (mode == 8) {
+        outputComplexSpectrum();
+    } else if (mode == 9) {
+        initFromComplexImage();
+    }
+}

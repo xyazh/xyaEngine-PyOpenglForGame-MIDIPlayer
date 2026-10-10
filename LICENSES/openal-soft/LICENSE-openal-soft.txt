@@ -1,0 +1,27 @@
+OpenAL Soft —— 随本仓库分发的音频库（LGPL）
+================================================================
+
+本目录说明的是下面这几个二进制文件的来源与许可，它们不是本项目的代码：
+
+    pyglgame/openal/lib/OpenAL64.dll     Windows 64 位（内嵌版本串 "1.1 ALSOFT 1.15.1"）
+    pyglgame/openal/lib/OpenAL32.dll     Windows 32 位（内嵌版本串 "1.1 ALSOFT 1.15.1"）
+    pyglgame/openal/lib/libopenal32.so   Linux
+    pyglgame/openal/soft_oal_64.dll      Windows 64 位（内嵌版本串 "1.1 ALSOFT 1.18.2"）
+
+* 上游：OpenAL Soft，https://github.com/kcat/openal-soft （官网 https://openal-soft.org/ ）
+* 许可：**LGPL**（GNU 弱 copyleft）。上游仓库的 ``COPYING`` 是
+  *GNU Library General Public License, version 2*；本目录同时附
+  ``LICENSES/LGPL-2.1.txt``（LGPL v2.1 全文）供参考，逐字原文以官方
+  ``COPYING`` 为准：https://github.com/kcat/openal-soft/blob/master/COPYING
+* 修改情况：**未修改**，直接使用上游发布/发行版里的二进制；调用方式是
+  ``ctypes`` 在运行期 ``LoadLibrary`` 动态加载（见 ``pyglgame/openal/Device.py``
+  :class:`~pyglgame.openal.Device.Device`），因此用户可以**自行替换**这些 DLL
+  （换成自己编译的同名文件即可生效）—— 这正是 LGPL 要求的"可重新链接"能力。
+* 源码获取：见上面的仓库地址（tag/版本按内嵌版本串对应，1.15.1 / 1.18.2）。
+* 你（分发者）要做的事：把本声明与 ``LICENSES/LGPL-2.1.txt`` 一起放进发行物，
+  并保留"用户可替换该 DLL"的能力（别把它静态链进 exe、别改名到找不到）。
+
+> 引擎里 ``pyglgame/openal/*.py``（``al.py`` / ``alc.py`` / ``library_loader.py`` …）
+> 是 OpenAL 的 **Python 绑定**，与上面这些 DLL 不是一回事：绑定代码源自 PyOpenAL
+> （作者 Zuzu_Typ，PyPI 标注 ``License :: Public Domain``），**不受限制**；
+> 有约束的只有 DLL 本身。

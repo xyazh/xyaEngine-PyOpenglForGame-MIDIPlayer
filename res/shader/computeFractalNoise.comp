@@ -1,0 +1,99 @@
+#version 430
+
+// 程序化噪声贴图（2D，每帧由 TextureFractalNoise.render() 重新算一遍）。
+//
+// 着色器本身只做三件事：
+//   1. 由 gl_GlobalInvocationID 算出贴图 uv → 噪声空间坐标（uv * 频率 + 偏移）
+//   2. 按 u_channelMode 决定四个通道各放什么（种类 / 频率层 / 时间切片）
+//   3. 写进 image2D（RGBA32F）
+//
+// 噪声本体（值/Perlin/山脊/团絮/Worley/域扭曲/旋度、可平铺哈希、fBm、阈值映射）
+// 全部在 noise.glsl 里，与体积雾共用同一份实现。
+//
+// 兼容说明：u_time / u_value / u_amplitude / u_frequency / u_offset 这五个旧
+// uniform 名字保留（老代码直接给属性赋值也能跑），但语义重新定义过：
+//   - u_frequency 现在是"每个轴向的基础格点数"（旧值语义是"初始频率倍率"）
+//   - fBm 输出做了归一化（0..1），不再是"振幅累加"，所以同参数下比旧版略亮
+
+layout (local_size_x = 16, local_size_y = 16) in;
+
+layout (binding = 7, rgba32f) uniform image2D outputImage;
+
+// === 旧接口（兼容）===
+uniform vec3  u_time;        // z 切片 = 时间轴（PACK_RGB_TIME 用 x/y/z 三个切片）
+uniform float u_value;       // 最终偏置（叠加在 0..1 之上）
+uniform float u_amplitude;   // 最终振幅（1.0 = 不缩放）
+uniform float u_frequency;   // 每个轴向的基础格点数（可平铺时要取整）
+uniform vec2  u_offset;      // 噪声空间偏移（单位 = 格点）
+
+// === 种类 / 功能 ===
+uniform int   u_kind;        // NOISE_* 之一（默认 NOISE_VALUE）
+uniform int   u_octaves;     // 倍频层数 1..8
+uniform float u_lacunarity;  // 每层频率倍率（可平铺建议 2.0）
+uniform float u_gain;        // 每层振幅倍率
+uniform vec3  u_period;      // 每轴格点周期（0 = 该轴不平铺；z 轴给"循环秒数"）
+uniform float u_jitter;      // Worley 特征点抖动 [0,1]
+uniform float u_warp;        // 域扭曲强度（NOISE_WARP 用）
+uniform float u_threshold;   // 阈值（把噪声压成"有边界"的图案）
+uniform float u_softness;    // 阈值过渡宽度（0 = 恒等映射）
+uniform float u_contrast;    // 对比度（幂）
+uniform int   u_invert;      // 反相
+uniform int   u_channelMode; // PACK_* 之一
+uniform float u_channelGain; // 通道之间的频率倍率
+
+#include "noise.glsl"
+
+// 一次"采样" = fBm + 阈值映射 + 振幅/偏置
+// frequencyScale：调用方把坐标预乘过多少倍，周期也要跟着乘（否则露接缝）
+float nzSample(vec3 coord, int kind, float frequencyScale)
+{
+    float n = nzFbm(coord, kind, u_octaves, u_lacunarity, u_gain,
+                    u_period * frequencyScale, u_jitter, u_warp);
+    n = nzShape(n, u_threshold, u_softness, u_contrast, u_invert);
+    return clamp(n * u_amplitude + u_value, 0.0, 1.0);
+}
+
+void main()
+{
+    ivec2 gid = ivec2(gl_GlobalInvocationID.xy);
+    ivec2 size = imageSize(outputImage);
+    // +0.5：采样落在纹素中心（可平铺时首尾纹素对称，接缝最干净）
+    vec2 uv = (vec2(gid) + 0.5) / vec2(size);
+    vec2 base = uv * u_frequency + u_offset;
+
+    float channelGain = u_channelGain;
+    vec3 channels;
+    float alpha = 1.0;
+
+    if (u_channelMode == PACK_RGB_KINDS) {
+        // RGB = 三种不同种类（kind, kind+1, kind+2 环绕）
+        channels = vec3(nzSample(vec3(base, u_time.x), u_kind, 1.0),
+                        nzSample(vec3(base, u_time.y), (u_kind + 1) % NOISE_COUNT, 1.0),
+                        nzSample(vec3(base, u_time.z), (u_kind + 2) % NOISE_COUNT, 1.0));
+    } else if (u_channelMode == PACK_RGB_OCTAVE) {
+        // RGB = 低频 / 中频 / 高频（同一张图里同时能看到三个尺度的结构）
+        channels = vec3(nzSample(vec3(base, u_time.x), u_kind, 1.0),
+                        nzSample(vec3(base * channelGain, u_time.x), u_kind, channelGain),
+                        nzSample(vec3(base * channelGain * channelGain, u_time.x),
+                                 u_kind, channelGain * channelGain));
+    } else if (u_channelMode == PACK_RGB_TIME) {
+        // RGB = 三个时间切片（配合 u_period.z 可以做无缝循环动画）
+        channels = vec3(nzSample(vec3(base, u_time.x), u_kind, 1.0),
+                        nzSample(vec3(base, u_time.y), u_kind, 1.0),
+                        nzSample(vec3(base, u_time.z), u_kind, 1.0));
+    } else if (u_channelMode == PACK_RGBA_LAYER) {
+        // RGB = 低频 × 高频，A = 高频（着色器里可以拿 A 做侵蚀/遮罩）
+        float low = nzSample(vec3(base, u_time.x), u_kind, 1.0);
+        float high = nzSample(vec3(base * channelGain, u_time.y),
+                              (u_kind + 1) % NOISE_COUNT, channelGain);
+        channels = vec3(low * high);
+        alpha = high;
+    } else {
+        // PACK_GRAY_MUL（默认）：两层相乘 → 灰度团块
+        float n1 = nzSample(vec3(base, u_time.x), u_kind, 1.0);
+        float n2 = nzSample(vec3(base, u_time.y), u_kind, 1.0);
+        channels = vec3(n1 * n2);
+    }
+
+    imageStore(outputImage, gid, vec4(channels, alpha));
+}
