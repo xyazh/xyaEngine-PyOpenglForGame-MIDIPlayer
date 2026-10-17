@@ -2,7 +2,7 @@ import re
 from OpenGL.GL import *
 from OpenGL.GL.shaders import compileShader, compileProgram
 from .Shader import Shader
-from .. import resources
+from ..resources.Resources import Resources
 from ..ResourceLocation import ResourceLocation
 from ..xyazhServer.ConsoleMessage import ConsoleMessage
 
@@ -130,8 +130,8 @@ class ShaderManager:
             text = data.decode("utf-8")
         except UnicodeDecodeError as error:
             raise RuntimeError(f"着色器 {file} 含 #include，但不是 UTF-8 文本: {error}")
-        key = resources.normalizeEntry(file)
-        return ShaderManager._resolveIncludes(text, resources.dirnamePath(file),
+        key = Resources.normalizeEntry(file)
+        return ShaderManager._resolveIncludes(text, Resources.dirnamePath(file),
                                              (key,)).encode("utf-8")
 
     @staticmethod
@@ -143,8 +143,8 @@ class ShaderManager:
         """
         def replace(match: "re.Match") -> str:
             name = match.group(1)
-            path = resources.joinPath(base_dir, name)
-            key = resources.normalizeEntry(path)
+            path = Resources.joinPath(base_dir, name)
+            key = Resources.normalizeEntry(path)
             if key in stack:
                 raise RuntimeError(f"着色器 #include 出现循环: {name}")
             data = ResourceLocation(path).toBytes()
@@ -152,7 +152,7 @@ class ShaderManager:
                 raise FileNotFoundError(
                     f"着色器 #include 找不到文件: {name}（解析为 {path}）")
             inner = data.decode("utf-8")
-            return ShaderManager._resolveIncludes(inner, resources.dirnamePath(path),
+            return ShaderManager._resolveIncludes(inner, Resources.dirnamePath(path),
                                                  stack + (key,))
 
         return INCLUDE_PATTERN.sub(replace, text)

@@ -1,4 +1,4 @@
-"""资源包（``*.xypack``）：把 ``res/`` 目录打成一个可随机读取的包。
+"""资源包（``*.xypack``）：把 ``res/`` 目录打成一个可随机读取的封包。
 
 为什么是 zip，而不是自定义格式
 ------------------------------
@@ -6,8 +6,7 @@
 * 标准库 :mod:`zipfile` 自带「索引 + 随机读取 + 解压」，**零新依赖**，
   也不必自己实现偏移表/校验和（那类代码是自己造 bug 的重灾区）；
 * 条目名就是相对 ``res/`` 的路径（``shader/dis.frag``），语义与"目录形态"
-  完全一致 —— 于是 :class:`~pyglgame.ResourceLocation.ResourceLocation`
-  只需要换一个"读字节"的来源，其它逻辑一行都不用改；
+  完全一致 —— 上层只需要换一个"读字节"的来源就行；
 * 任何解压工具都能打开、替换单个条目、比对内容（"包里的贴图是不是旧的"
   这类排查很省事）。
 
@@ -22,6 +21,12 @@
 
 写入是**确定性**的：条目按名字排序、时间戳固定成 1980-01-01、权限位固定，
 同样的输入永远得到逐字节相同的包（便于比对"这次构建到底改了什么"）。
+
+读取端由 :class:`~pyglgame.resources.ResourceLoader.PackLoader` 使用；想换封包
+格式（自加密包 / 别的压缩）就继承本类或换上自己的 Loader，见 ``docs/资源包.md``。
+
+本模块**没有模块级函数**：格式相关的工具都是 :class:`ResourcePack` 的静态 /
+类方法（``ResourcePack.SUFFIX`` / ``ResourcePack.packDirectory(...)`` …）。
 """
 
 import fnmatch
@@ -30,173 +35,184 @@ import os
 import time
 import zipfile
 
-#: 包的后缀（约定用 ``res.xypack``）
-PACK_SUFFIX = ".xypack"
-
-#: 清单版本：读取端按它判断"这个包是不是我认得的格式"
-MANIFEST_VERSION = 1
-
-#: 打包时固定用的时间戳（zip 的最早合法值），保证可复现
-_FIXED_DATE_TIME = (1980, 1, 1, 0, 0, 0)
-
-#: ``--compress auto`` 会压的文本类后缀（其余一律 store）
-TEXT_SUFFIXES = (".glsl", ".frag", ".vert", ".comp", ".json", ".txt", ".md",
-                 ".toml", ".yaml", ".yml", ".scene", ".tiled", ".csv", ".xml")
-
-#: 打包时永远跳过的目录
-SKIP_DIRS = ("__pycache__", ".git", ".svn", ".idea", ".vscode")
-
-
-def normalizeEntry(name: str) -> str:
-    """把条目名统一成 ``a/b/c``（正斜杠、去点、去首尾斜杠）。"""
-    name = str(name).replace("\\", "/")
-    parts = []
-    for part in name.split("/"):
-        if part in ("", "."):
-            continue
-        if part == ".." and parts:
-            parts.pop()
-            continue
-        parts.append(part)
-    return "/".join(parts)
-
-
-def matchesAny(name: str, patterns) -> bool:
-    """``fnmatch`` 风格的包含/排除匹配；``dir/**`` 也匹配目录本身。"""
-    if not patterns:
-        return False
-    for pattern in patterns:
-        pattern = str(pattern).replace("\\", "/").strip()
-        if not pattern:
-            continue
-        if pattern.endswith("/**"):
-            head = pattern[:-3].rstrip("/")
-            if name == head or name.startswith(head + "/"):
-                return True
-        if fnmatch.fnmatchcase(name, pattern):
-            return True
-        # ``*.png`` 这种没有目录的写法，也允许匹配任意深度
-        if "/" not in pattern and fnmatch.fnmatchcase(name.rsplit("/", 1)[-1], pattern):
-            return True
-    return False
-
-
-def entryNames(source: str, include=(), exclude=()) -> list:
-    """列出 ``source`` 目录下要进包的条目名（已排序、已过滤）。"""
-    names = []
-    for root, dirs, files in os.walk(source):
-        dirs[:] = sorted(d for d in dirs if d not in SKIP_DIRS)
-        for filename in sorted(files):
-            full = os.path.join(root, filename)
-            rel = normalizeEntry(os.path.relpath(full, source))
-            if include and not matchesAny(rel, include):
-                continue
-            if exclude and matchesAny(rel, exclude):
-                continue
-            names.append(rel)
-    names.sort()
-    return names
-
-
-def compressionFor(name: str, compress: str) -> int:
-    """按 ``compress`` 策略决定某个条目的压缩方式。"""
-    mode = str(compress or "store").lower()
-    if mode in ("deflate", "zip_deflated"):
-        return zipfile.ZIP_DEFLATED
-    if mode == "auto" and name.lower().endswith(TEXT_SUFFIXES):
-        return zipfile.ZIP_DEFLATED
-    return zipfile.ZIP_STORED
-
-
-def packDirectory(source: str, target: str, include=(), exclude=(),
-                  compress: str = "store", extra: dict = None) -> dict:
-    """把 ``source`` 目录打进 ``target`` 包，返回统计信息（dict）。
-
-    ``source`` / ``target`` 由调用方给（一般是相对项目根的路径，或者由
-    ``__file__`` 推出来的路径），本函数不写死任何绝对路径。
-    """
-    source = os.path.abspath(source)
-    if not os.path.isdir(source):
-        raise FileNotFoundError("要打包的目录不存在: %s" % source)
-
-    names = entryNames(source, include=include, exclude=exclude)
-    parent = os.path.dirname(os.path.abspath(target))
-    if parent:
-        os.makedirs(parent, exist_ok=True)
-
-    source_bytes = 0
-    with zipfile.ZipFile(target, "w", compression=zipfile.ZIP_STORED) as archive:
-        for name in names:
-            full = os.path.join(source, name.replace("/", os.sep))
-            with open(full, "rb") as handle:
-                data = handle.read()
-            source_bytes += len(data)
-            info = zipfile.ZipInfo(name, date_time=_FIXED_DATE_TIME)
-            info.external_attr = 0o644 << 16      # 权限位固定，保证可复现
-            info.compress_type = compressionFor(name, compress)
-            archive.writestr(info, data)
-
-        manifest = {
-            "format": "xypack",
-            "version": MANIFEST_VERSION,
-            "tool": "tools/pack_resources.py",
-            "created": time.strftime("%Y-%m-%d %H:%M:%S"),
-            "compress": str(compress or "store").lower(),
-            "root": os.path.basename(source),
-            "files": len(names),
-            "bytes": source_bytes,
-            "include": list(include or ()),
-            "exclude": list(exclude or ()),
-        }
-        if extra:
-            manifest.update(extra)
-        archive.comment = json.dumps(manifest, ensure_ascii=False,
-                                     sort_keys=True).encode("utf-8")
-
-    pack_bytes = os.path.getsize(target)
-    return {"source": source, "target": os.path.abspath(target), "files": len(names),
-            "bytes": source_bytes, "pack_bytes": pack_bytes,
-            "ratio": (pack_bytes / source_bytes) if source_bytes else 0.0}
-
-
-def readManifest(path: str) -> dict:
-    """读包清单（坏包/非包返回 ``None``）。"""
-    try:
-        with zipfile.ZipFile(path) as archive:
-            comment = archive.comment
-    except (OSError, zipfile.BadZipFile):
-        return None
-    if not comment:
-        return None
-    try:
-        manifest = json.loads(comment.decode("utf-8"))
-    except (UnicodeDecodeError, ValueError):
-        return None
-    return manifest if isinstance(manifest, dict) else None
-
-
-def isPackFile(path: str) -> bool:
-    """判断"这个路径看起来是不是资源包"（后缀对 + 是合法 zip）。"""
-    if not os.path.isfile(path):
-        return False
-    if not path.lower().endswith(PACK_SUFFIX):
-        return False
-    return zipfile.is_zipfile(path)
-
-
-def listPack(path: str) -> list:
-    """列出包里的条目：``[(名字, 解压后字节数), ...]``（按名字排序）。"""
-    with zipfile.ZipFile(path) as archive:
-        return sorted((info.filename, info.file_size) for info in archive.infolist())
-
 
 class ResourcePack:
-    """只读资源包。条目名与"目录形态"下的相对路径一一对应。
+    """``*.xypack`` 封包。
 
-    句柄会一直开着（资源的读取发生在启动/首次使用时，重复 open 一次包
-    在几十 MB 的量级上并不便宜），:meth:`close` 显式释放。
-    `importlib.resources` 那种"每次读都重新定位"的做法在这里没必要。
+    * **静态 / 类方法** = 格式本身：名字工具、打包、清单、校验；
+    * **实例** = 一个只读句柄：列条目、读条目（句柄会一直开着 —— 资源的读取发生在
+      启动/首次使用时，重复 open 一次包在几十 MB 的量级上并不便宜；
+      :meth:`close` 显式释放。``importlib.resources`` 那种"每次读都重新定位"
+      的做法在这里没必要）。
     """
+
+    #: 包的后缀（约定用 ``res.xypack``）
+    SUFFIX = ".xypack"
+
+    #: 清单版本：读取端按它判断"这个包是不是我认得的格式"
+    MANIFEST_VERSION = 1
+
+    #: 打包时固定用的时间戳（zip 的最早合法值），保证可复现
+    FIXED_DATE_TIME = (1980, 1, 1, 0, 0, 0)
+
+    #: ``--compress auto`` 会压的文本类后缀（其余一律 store）
+    TEXT_SUFFIXES = (".glsl", ".frag", ".vert", ".comp", ".json", ".txt", ".md",
+                     ".toml", ".yaml", ".yml", ".scene", ".tiled", ".csv", ".xml")
+
+    #: 打包时永远跳过的目录
+    SKIP_DIRS = ("__pycache__", ".git", ".svn", ".idea", ".vscode")
+
+    # === 名字工具（静态） ===
+
+    @staticmethod
+    def normalizeEntry(name: str) -> str:
+        """把条目名统一成 ``a/b/c``（正斜杠、去点、去首尾斜杠）。"""
+        parts = []
+        for part in str(name).replace("\\", "/").split("/"):
+            if part in ("", "."):
+                continue
+            if part == ".." and parts:
+                parts.pop()
+                continue
+            parts.append(part)
+        return "/".join(parts)
+
+    @staticmethod
+    def matchesAny(name: str, patterns) -> bool:
+        """``fnmatch`` 风格的包含/排除匹配；``dir/**`` 也匹配目录本身。"""
+        if not patterns:
+            return False
+        for pattern in patterns:
+            pattern = str(pattern).replace("\\", "/").strip()
+            if not pattern:
+                continue
+            if pattern.endswith("/**"):
+                head = pattern[:-3].rstrip("/")
+                if name == head or name.startswith(head + "/"):
+                    return True
+            if fnmatch.fnmatchcase(name, pattern):
+                return True
+            # ``*.png`` 这种没有目录的写法，也允许匹配任意深度
+            if "/" not in pattern and fnmatch.fnmatchcase(name.rsplit("/", 1)[-1], pattern):
+                return True
+        return False
+
+    @classmethod
+    def entryNames(cls, source: str, include=(), exclude=()) -> list:
+        """列出 ``source`` 目录下要进包的条目名（已排序、已过滤）。"""
+        names = []
+        for root, dirs, files in os.walk(source):
+            dirs[:] = sorted(d for d in dirs if d not in cls.SKIP_DIRS)
+            for filename in sorted(files):
+                full = os.path.join(root, filename)
+                rel = cls.normalizeEntry(os.path.relpath(full, source))
+                if include and not cls.matchesAny(rel, include):
+                    continue
+                if exclude and cls.matchesAny(rel, exclude):
+                    continue
+                names.append(rel)
+        names.sort()
+        return names
+
+    @classmethod
+    def compressionFor(cls, name: str, compress: str) -> int:
+        """按 ``compress`` 策略决定某个条目的压缩方式。"""
+        mode = str(compress or "store").lower()
+        if mode in ("deflate", "zip_deflated"):
+            return zipfile.ZIP_DEFLATED
+        if mode == "auto" and name.lower().endswith(cls.TEXT_SUFFIXES):
+            return zipfile.ZIP_DEFLATED
+        return zipfile.ZIP_STORED
+
+
+    # === 生成 / 校验（类方法） ===
+
+    @classmethod
+    def packDirectory(cls, source: str, target: str, include=(), exclude=(),
+                      compress: str = "store", extra: dict = None) -> dict:
+        """把 ``source`` 目录打进 ``target`` 包，返回统计信息（dict）。
+
+        ``source`` / ``target`` 由调用方给（一般是相对项目根的路径，或者由
+        ``__file__`` 推出来的路径），这里不写死任何绝对路径。
+        """
+        source = os.path.abspath(source)
+        if not os.path.isdir(source):
+            raise FileNotFoundError("要打包的目录不存在: %s" % source)
+
+        names = cls.entryNames(source, include=include, exclude=exclude)
+        parent = os.path.dirname(os.path.abspath(target))
+        if parent:
+            os.makedirs(parent, exist_ok=True)
+
+        source_bytes = 0
+        with zipfile.ZipFile(target, "w", compression=zipfile.ZIP_STORED) as archive:
+            for name in names:
+                full = os.path.join(source, name.replace("/", os.sep))
+                with open(full, "rb") as handle:
+                    data = handle.read()
+                source_bytes += len(data)
+                info = zipfile.ZipInfo(name, date_time=cls.FIXED_DATE_TIME)
+                info.external_attr = 0o644 << 16      # 权限位固定，保证可复现
+                info.compress_type = cls.compressionFor(name, compress)
+                archive.writestr(info, data)
+
+            manifest = {
+                "format": "xypack",
+                "version": cls.MANIFEST_VERSION,
+                "tool": "tools/pack_resources.py",
+                "created": time.strftime("%Y-%m-%d %H:%M:%S"),
+                "compress": str(compress or "store").lower(),
+                "root": os.path.basename(source),
+                "files": len(names),
+                "bytes": source_bytes,
+                "include": list(include or ()),
+                "exclude": list(exclude or ()),
+            }
+            if extra:
+                manifest.update(extra)
+            archive.comment = json.dumps(manifest, ensure_ascii=False,
+                                         sort_keys=True).encode("utf-8")
+
+        pack_bytes = os.path.getsize(target)
+        return {"source": source, "target": os.path.abspath(target), "files": len(names),
+                "bytes": source_bytes, "pack_bytes": pack_bytes,
+                "ratio": (pack_bytes / source_bytes) if source_bytes else 0.0}
+
+    @classmethod
+    def readManifest(cls, path: str) -> dict:
+        """读包清单（坏包 / 非包返回 ``None``）。"""
+        try:
+            with zipfile.ZipFile(path) as archive:
+                comment = archive.comment
+        except (OSError, zipfile.BadZipFile):
+            return None
+        if not comment:
+            return None
+        try:
+            manifest = json.loads(comment.decode("utf-8"))
+        except (UnicodeDecodeError, ValueError):
+            return None
+        return manifest if isinstance(manifest, dict) else None
+
+    @classmethod
+    def isPackFile(cls, path) -> bool:
+        """判断"这个路径看起来是不是本格式的包"（后缀对 + 是合法 zip）。
+
+        自定义封包格式时在自己的 Loader 里覆盖这个判断（``Loader.accepts``）。
+        """
+        if not os.path.isfile(path):
+            return False
+        if not str(path).lower().endswith(cls.SUFFIX):
+            return False
+        return zipfile.is_zipfile(path)
+
+    @classmethod
+    def listPack(cls, path: str) -> list:
+        """列出包里的条目：``[(名字, 解压后字节数), ...]``（按名字排序）。"""
+        with zipfile.ZipFile(path) as archive:
+            return sorted((info.filename, info.file_size) for info in archive.infolist())
+
+    # === 只读句柄 ===
 
     def __init__(self, path: str) -> None:
         self.path = os.path.abspath(path)
@@ -216,22 +232,23 @@ class ResourcePack:
             raise ValueError(
                 "资源包不是合法的 zip（%s）：%s\n"
                 "重新生成一个：python tools/pack_resources.py" % (self.path, error))
-        self.manifest = readManifest(self.path)
+        self.manifest = type(self).readManifest(self.path)
         for info in self._archive.infolist():
             if info.is_dir():
                 continue
-            name = normalizeEntry(info.filename)
+            name = type(self).normalizeEntry(info.filename)
             self._index[name] = info
             self._lower.setdefault(name.lower(), name)
 
     # === 查询 ===
 
     def names(self) -> list:
+        """包里所有条目的名字（排序；相对包根的路径，正斜杠）。"""
         return sorted(self._index)
 
     def entryName(self, name: str):
         """逻辑条目名 → 包里真实存在的名字（大小写不敏感兜底，Win 友好）。"""
-        name = normalizeEntry(name)
+        name = type(self).normalizeEntry(name)
         if name in self._index:
             return name
         return self._lower.get(name.lower())
@@ -256,7 +273,7 @@ class ResourcePack:
 
     def isDir(self, name: str) -> bool:
         """``name`` 是不是包里的目录（条目名的前缀）。"""
-        name = normalizeEntry(name)
+        name = type(self).normalizeEntry(name)
         if not name:
             return True
         if name in self._index:
@@ -267,7 +284,7 @@ class ResourcePack:
 
     def children(self, directory: str) -> list:
         """某个目录下的直接子项（文件与子目录都算，名字不含目录前缀）。"""
-        directory = normalizeEntry(directory)
+        directory = type(self).normalizeEntry(directory)
         prefix = directory + "/" if directory else ""
         found = []
         for name in self._index:
@@ -294,4 +311,3 @@ class ResourcePack:
 
     def __str__(self) -> str:
         return "ResourcePack<%s, %d files>" % (self.path, len(self._index))
-

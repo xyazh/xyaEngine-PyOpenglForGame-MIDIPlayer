@@ -158,14 +158,14 @@ def imageSize(data: dict) -> tuple:
 def imagePath(data: dict, directory: str = "") -> str:
     """``meta.image`` → 图集 PNG 的路径（相对 ``directory`` 解析）。
 
-    ``directory`` 可以是**逻辑路径**（``res/atlas``）—— 见 :mod:`pyglgame.resources`，
-    这样目录形态与资源包形态都能用。
+    ``directory`` 可以是**逻辑路径**（``res/atlas``）—— 见
+    :mod:`pyglgame.resources.Resources`，这样目录形态与资源包形态都能用。
     """
-    from .. import resources
+    from ..resources.Resources import Resources
     name = ((data or {}).get("meta") or {}).get("image")
     if not name:
         return ""
-    return resources.joinPath(directory, str(name)) if directory else str(name)
+    return Resources.joinPath(directory, str(name)) if directory else str(name)
 
 
 # === 动作（frameTags）===
@@ -322,7 +322,7 @@ def fromFile(path: str, **kwargs) -> dict:
         atlas = TextureAtlas.fromDict(aseprite.fromFile("res/atlas/hero.json"))
     """
     import json
-    from .. import resources
+    from ..resources.Resources import Resources
     from ..ResourceLocation import ResourceLocation
 
     text = ResourceLocation(path).tryToString()
@@ -330,7 +330,7 @@ def fromFile(path: str, **kwargs) -> dict:
     if not isinstance(data, dict):
         raise ValueError("不是合法的 LibreSprite/Aseprite 图集 JSON: %s" % path)
     if "image_path" not in kwargs:
-        guess = imagePath(data, resources.dirnamePath(path))
+        guess = imagePath(data, Resources.dirnamePath(path))
         if guess:
             kwargs["image_path"] = guess
     return toAtlas(data, **kwargs)

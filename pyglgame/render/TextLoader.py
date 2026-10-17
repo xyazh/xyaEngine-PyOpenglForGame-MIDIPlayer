@@ -21,7 +21,8 @@
 
 - ``None`` → PIL 自带的可缩放字体（零素材能显示，但**只有拉丁字符集**）；
 - **真实文件路径**（``C:/Windows/Fonts/msyh.ttc``）→ 直接交给 PIL；
-- **逻辑路径**（``res/font/x.ttf``）→ 走 :func:`pyglgame.resources.readBytes`，
+- **逻辑路径**（``res/font/x.ttf``）→ 走
+  :meth:`pyglgame.resources.Resources.Resources.readBytes`，
   所以封成 ``res.xypack`` 之后照样读得到；
 - file-like / 已是 PIL 字体对象 → 原样使用。
 
@@ -34,7 +35,7 @@ import os
 from OpenGL.GL import GL_CLAMP_TO_EDGE
 from PIL import Image, ImageDraw, ImageFont
 
-from .. import resources
+from ..resources.Resources import Resources
 from .Image import Image as GLImage
 from .Texture import Texture
 
@@ -56,7 +57,7 @@ def loadFont(font=None, font_size: int = 24) -> "ImageFont.ImageFont":
         if os.path.isfile(path):
             # 真实文件：交给 PIL 自己映射（系统字体动辄十几 MB，没必要读进内存）
             return ImageFont.truetype(path, size)
-        data = resources.readBytes(path)
+        data = Resources.readBytes(path)
         if data:
             # 逻辑路径（``res/font/x.ttf``）：资源包里的字体也要能读
             return ImageFont.truetype(BytesIO(data), size)

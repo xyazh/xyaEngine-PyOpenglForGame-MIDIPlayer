@@ -1,8 +1,9 @@
 """项目路径解析：``app_root`` / ``project_root`` / ``libs_path``（+ 历史遗留的 ``res_path``）。
 
 **资源路径**请写逻辑路径（``res/shader/dis.vert``）交给
-:mod:`pyglgame.resources`/:class:`~pyglgame.ResourceLocation.ResourceLocation` ——
-目录形态与 ``res.xypack`` 资源包形态都能读，见 ``docs/资源包.md``。
+:class:`pyglgame.resources.Resources.Resources`
+（或 :class:`~pyglgame.resources.ResourceLocation.ResourceLocation`）—— 目录形态与
+``res.xypack`` 资源包形态都能读，见 ``docs/资源包.md``。
 
 本模块只负责"项目/可执行文件在哪"，不再替调用方决定资源怎么找；
 ``res_path()`` 是历史遗留（只为"资源在项目外/必须给出真实路径"这类特殊情况保留）。
@@ -34,7 +35,8 @@ def res_path(*parts: str) -> str:
     """拼接 ``res`` 目录下的绝对路径（**历史遗留**，新代码别再用）。
 
     ⚠ 引擎内部已经一处都不用了：资源请写**逻辑路径**
-    （``ResourceLocation("res/shader/dis.vert")``），由 :mod:`pyglgame.resources`
+    （``ResourceLocation("res/shader/dis.vert")``），由
+    :class:`~pyglgame.resources.Resources.Resources`
     决定落到 ``res/`` 目录还是 ``res.xypack`` 资源包 —— 写死绝对路径就封不了包、
     换个工作目录也会错。这个函数只为特殊情况保留：需要把**真实文件路径**交给
     外部程序、或者明确知道资源没被打进包。

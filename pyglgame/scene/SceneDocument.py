@@ -31,7 +31,7 @@ import copy
 import json
 import os
 
-from .. import resources
+from ..resources.Resources import Resources
 from ..render.TextureAtlas import TextureAtlas
 from ..render.TileSet import TileSet
 from . import registry
@@ -47,9 +47,10 @@ def _isFile(path) -> bool:
     """这个资源路径是不是一个**真实存在的文件**（目录不算）。
 
     给 :meth:`SceneDocument.resolve` 判\"要不要拼 ``base_dir``\"用 ——
-    走 :mod:`pyglgame.resources`，所以目录形态与 ``res.xypack`` 资源包形态都吃。
+    走 :class:`~pyglgame.resources.Resources.Resources`，所以目录形态与
+    ``res.xypack`` 资源包形态都吃。
     """
-    return resources.exists(path) and not resources.isDir(path)
+    return Resources.exists(path) and not Resources.isDir(path)
 
 
 def _looksLikeAtlasFile(path: str) -> bool:
@@ -124,7 +125,7 @@ class SceneDocument:
         if data is None:
             raise ValueError("场景文件是空的: %s" % path)
         if base_dir is None:
-            base_dir = resources.dirnamePath(path)
+            base_dir = Resources.dirnamePath(path)
         return cls.fromDict(data, base_dir=base_dir)
 
     @classmethod
@@ -140,7 +141,7 @@ class SceneDocument:
 
         if isinstance(source, str):
             document = tiled_importer.fromFile(source, **kwargs)
-            base_dir = kwargs.get("base_dir") or resources.dirnamePath(source)
+            base_dir = kwargs.get("base_dir") or Resources.dirnamePath(source)
         else:
             document = tiled_importer.toScene(source, **kwargs)
             base_dir = kwargs.get("base_dir", "")
@@ -256,9 +257,9 @@ class SceneDocument:
         if not path:
             return ""
         path = str(path)
-        if not self.base_dir or resources.isRealPath(path):
+        if not self.base_dir or Resources.isRealPath(path):
             return path
-        joined = resources.joinPath(self.base_dir, path)
+        joined = Resources.joinPath(self.base_dir, path)
         if _isFile(path) and not _isFile(joined):
             return path
         return joined
@@ -292,16 +293,16 @@ class SceneDocument:
         if not path:
             return ""
         text = str(path)
-        if resources.isRealPath(text):
+        if Resources.isRealPath(text):
             return text
         candidates = []
         if self.base_dir:
             candidates.append(self.resolve(text))
         candidates.append(text)
-        if not text.replace("\\", "/").startswith(resources.DEFAULT_PREFIX + "/"):
-            candidates.append(resources.joinPath(resources.DEFAULT_PREFIX, text))
+        if not text.replace("\\", "/").startswith(Resources.DEFAULT_PREFIX + "/"):
+            candidates.append(Resources.joinPath(Resources.DEFAULT_PREFIX, text))
         for candidate in candidates:
-            if resources.exists(candidate) and not resources.isDir(candidate):
+            if Resources.exists(candidate) and not Resources.isDir(candidate):
                 return candidate
         return candidates[-1]
 
@@ -370,17 +371,17 @@ class SceneDocument:
         4. ``res/atlas``（**逻辑路径**：目录形态与 ``res.xypack`` 资源包形态都算）。
 
         返回的"目录"可能是逻辑路径（``res/atlas``）也可能是真实路径（``D:\\…``），
-        下游的 :mod:`pyglgame.resources` 两者都吃。
+        下游的 :class:`~pyglgame.resources.Resources.Resources` 两者都吃。
         """
         candidates = []
         if self.base_dir:
             candidates.append(self.base_dir)
-            candidates.append(resources.joinPath(self.base_dir, "atlas"))
-            candidates.append(resources.joinPath(self.base_dir, os.pardir, "atlas"))
-        candidates.append(resources.joinPath(resources.DEFAULT_PREFIX, "atlas"))
+            candidates.append(Resources.joinPath(self.base_dir, "atlas"))
+            candidates.append(Resources.joinPath(self.base_dir, os.pardir, "atlas"))
+        candidates.append(Resources.joinPath(Resources.DEFAULT_PREFIX, "atlas"))
         seen = []
         for directory in candidates:
-            if directory and directory not in seen and resources.isDir(directory):
+            if directory and directory not in seen and Resources.isDir(directory):
                 seen.append(directory)
         return seen
 
@@ -389,15 +390,15 @@ class SceneDocument:
         if not name:
             return None
         text = str(name)
-        if resources.isRealPath(text) and os.path.isfile(text):
+        if Resources.isRealPath(text) and os.path.isfile(text):
             return text
         base = text
         if base.lower().endswith(".json"):
             base = base[:-5]
         for directory in self.atlasSearchDirectories():
             for candidate in ("%s.json" % base, "%s.atlas.json" % base):
-                path = resources.joinPath(directory, candidate)
-                if (resources.exists(path) and not resources.isDir(path)
+                path = Resources.joinPath(directory, candidate)
+                if (Resources.exists(path) and not Resources.isDir(path)
                         and _looksLikeAtlasFile(path)):
                     return path
         return None
@@ -416,10 +417,10 @@ class SceneDocument:
         """
         names = []
         for directory in self.atlasSearchDirectories():
-            for entry in resources.listDir(directory):
+            for entry in Resources.listDir(directory):
                 if not entry.lower().endswith(".json"):
                     continue
-                if not _looksLikeAtlasFile(resources.joinPath(directory, entry)):
+                if not _looksLikeAtlasFile(Resources.joinPath(directory, entry)):
                     continue
                 stem = entry[:-5]
                 if stem.endswith(".atlas"):

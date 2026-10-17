@@ -48,15 +48,15 @@
 命名"能成立的前提就是这个；尺寸不一致的贴图请自己写 ``normal_map`` 并自行保证 UV 对得上
 （见 ``docs/2D帧动画与场景导入.md`` 的"给图集加法线 / 高光"）。
 
-本模块**只做纯数据判断**（名字拼接 + :mod:`pyglgame.resources` 的存在性/列目录查询）：
-不碰 GL、不建贴图 —— 而且**目录形态与资源包形态都吃**（封包后照样能自动配对）。
+本模块**只做纯数据判断**（名字拼接 + :mod:`pyglgame.resources.Resources` 的存在性 /
+列目录查询）：不碰 GL、不建贴图 —— 而且**目录形态与资源包形态都吃**（封包后照样能自动配对）。
 :func:`materialFor` 返回的材质里放的是
 :class:`~pyglgame.render.LazyTexture.LazyTexture`（第一次绘制才上传）。
 """
 
 import os
 
-from .. import resources
+from ..resources.Resources import Resources
 from .LazyTexture import LazyTexture
 
 #: 法线贴图的后缀（**长的在前**：``_normal`` 比 ``_n`` 更具体）
@@ -126,20 +126,20 @@ def findMaterialMap(image, suffixes=NORMAL_SUFFIXES,
     if not candidates:
         return ""
     for candidate in candidates:
-        if resources.exists(candidate) and not resources.isDir(candidate):
+        if Resources.exists(candidate) and not Resources.isDir(candidate):
             return candidate
     # 精确名字都没命中：再按"文件名 + 后缀"大小写不敏感地扫一遍目录（HERO_N.PNG 之类）
     stem = stripImageExtension(image)
-    directory = resources.dirnamePath(stem) or "."
-    if not resources.isDir(directory):
+    directory = Resources.dirnamePath(stem) or "."
+    if not Resources.isDir(directory):
         return ""
-    wanted = {resources.basenamePath(stem).lower() + suffix for suffix in suffixes}
-    for entry in resources.listDir(directory):
+    wanted = {Resources.basenamePath(stem).lower() + suffix for suffix in suffixes}
+    for entry in Resources.listDir(directory):
         name, extension = os.path.splitext(entry)
         if extension.lower() not in extensions:
             continue
         if name.lower() in wanted:
-            return resources.joinPath(directory, entry)
+            return Resources.joinPath(directory, entry)
     return ""
 
 

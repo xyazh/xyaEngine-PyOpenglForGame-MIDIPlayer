@@ -175,11 +175,11 @@ def loadTemplate(reference: str, base_dir: str = "", cache: dict = None) -> dict
     """
     if not reference:
         return None
-    from .. import resources
+    from ..resources.Resources import Resources
 
     path = str(reference)
-    if base_dir and not resources.isRealPath(path):
-        path = resources.joinPath(base_dir, path)
+    if base_dir and not Resources.isRealPath(path):
+        path = Resources.joinPath(base_dir, path)
     if cache is not None and path in cache:
         return cache[path]
     import xml.etree.ElementTree as ElementTree
@@ -643,11 +643,11 @@ def resolvePath(path, base_dir: str = "") -> str:
         return ""
     if not base_dir:
         return str(path)
-    from .. import resources
+    from ..resources.Resources import Resources
 
-    if resources.isRealPath(str(path)):
+    if Resources.isRealPath(str(path)):
         return str(path)
-    return resources.joinPath(base_dir, str(path))
+    return Resources.joinPath(base_dir, str(path))
 
 
 def physicsFromMap(data: dict, objects=None) -> dict:
@@ -847,7 +847,7 @@ def fromFile(path: str, **kwargs) -> dict:
 
         document = tiled.fromFile("res/scene/level1.json")
     """
-    from .. import resources
+    from ..resources.Resources import Resources
     from ..ResourceLocation import ResourceLocation
 
     text = ResourceLocation(path).tryToString()
@@ -855,5 +855,5 @@ def fromFile(path: str, **kwargs) -> dict:
     if not isinstance(data, dict):
         raise TiledImportError("不是合法的 Tiled JSON: %s" % path)
     if "base_dir" not in kwargs:
-        kwargs["base_dir"] = resources.dirnamePath(path)
+        kwargs["base_dir"] = Resources.dirnamePath(path)
     return toScene(data, **kwargs)

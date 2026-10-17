@@ -69,7 +69,7 @@ trim 还原（不还原 → 动作抖动）
 
 from OpenGL.GL import GL_CLAMP_TO_EDGE, GL_REPEAT
 
-from .. import resources
+from ..resources.Resources import Resources
 from . import MaterialMaps
 from .Texture import LINEAR, NEAREST, Texture
 
@@ -97,13 +97,13 @@ def resolveImagePath(base_dir, image) -> str:
     其余仍回退到 ``base_dir/image``（保持"相对路径"的旧语义）。
     """
     image = str(image)
-    if not base_dir or resources.isRealPath(image):
+    if not base_dir or Resources.isRealPath(image):
         return image
-    joined = resources.joinPath(base_dir, image)
+    joined = Resources.joinPath(base_dir, image)
     for candidate in (joined, image):
-        if resources.exists(candidate) and not resources.isDir(candidate):
+        if Resources.exists(candidate) and not Resources.isDir(candidate):
             return candidate
-    if resources.isLogicalPath(image, resources.DEFAULT_PREFIX):
+    if Resources.isLogicalPath(image, Resources.DEFAULT_PREFIX):
         return image
     return joined
 
@@ -495,7 +495,7 @@ class TextureAtlas:
         if isinstance(data, str):
             document = aseprite_importer.fromFile(data, **kwargs)
             if base_dir is None:
-                base_dir = resources.dirnamePath(data) or None
+                base_dir = Resources.dirnamePath(data) or None
         else:
             document = aseprite_importer.toAtlas(data, **kwargs)
         return cls.fromDict(document, base_dir=base_dir, auto_material=auto_material)
